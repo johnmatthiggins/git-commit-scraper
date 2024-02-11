@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"sync"
 	"time"
 
 	"github.com/joho/godotenv"
@@ -27,6 +28,11 @@ type CommitData struct {
 	Date time.Time
 }
 
+type DayCount struct {
+	CommitCount uint64
+	Day         time.Time
+}
+
 func main() {
 	err := godotenv.Load()
 
@@ -36,11 +42,16 @@ func main() {
 
 	token := os.Getenv("GITHUB_API_TOKEN")
 	commits, err := getAllCommits(token)
+
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	fmt.Println(commits)
+}
+
+func getDayCounts() ([]DayCount, error) {
+	return nil, nil
 }
 
 func getAllCommits(token string) ([]CommitData, error) {
@@ -51,15 +62,26 @@ func getAllCommits(token string) ([]CommitData, error) {
 	}
 
 	var commits []CommitData
+	var mtx sync.Mutex
+	var wg sync.WaitGroup
+
+	wg.Add(len(repos))
 
 	for _, repo := range repos {
-		repoCommits, err := getCommitsFromRepo(repo.FullName, token)
-		if err != nil {
-			return nil, err
-		}
+		func() {
+			defer wg.Done()
+			repoCommits, err := getCommitsFromRepo(repo.FullName, token)
+			if err != nil {
+				log.Fatal(err)
+			}
 
-		commits = append(commits, repoCommits...)
+			mtx.Lock()
+			commits = append(commits, repoCommits...)
+			mtx.Unlock()
+		}()
 	}
+
+	wg.Wait()
 
 	return commits, nil
 }

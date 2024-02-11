@@ -29,7 +29,11 @@ func main() {
 	}
 
 	token := os.Getenv("GITHUB_API_TOKEN")
+	repositories, err := getRepos(token)
+	fmt.Println(repositories)
+}
 
+func getRepos(token string) ([]RepositoryData, error) {
 	// Get list of public repositories...
 	// Fetch commits from each repository...
 	// Save all the information to database...
@@ -37,31 +41,25 @@ func main() {
 
 	client := &http.Client{}
 	request, err := http.NewRequest("GET", fmt.Sprintf("https://%s?per_page=100&type=public", reposEndpoint), nil)
+
+	if err != nil {
+		return nil, err
+	}
 	request.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
 	request.Header.Add("Accept", "application/vnd.github+json")
 	request.Header.Add("X-GitHub-Api-Version", "2022-11-28")
 
 	response, err := client.Do(request)
-	if err != nil {
-		log.Fatal(err)
-	} else {
-		// data, err := io.ReadAll(response.Body)
-
-		// if err != nil {
-		// 	log.Fatal(err)
-		// }
-
-		// fmt.Println(string(data))
-
+	if err == nil {
 		var repositories []interface{}
 		bytes, err := io.ReadAll(response.Body)
 
 		if err != nil {
-			log.Fatal(err)
+			return nil, err
 		}
 		err = json.Unmarshal([]byte(bytes), &repositories)
 		if err != nil {
-			log.Fatal(err)
+			return nil, err
 		}
 
 		var repositoryData []RepositoryData
@@ -79,6 +77,8 @@ func main() {
 			repositoryData = append(repositoryData, repo)
 		}
 
-		fmt.Println(repositoryData)
+		return repositoryData, nil
 	}
+
+	return nil, err
 }

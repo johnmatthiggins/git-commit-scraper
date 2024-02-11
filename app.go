@@ -11,7 +11,7 @@ import (
 )
 
 const USERNAME = "johnmatthiggins"
-const GITHUB_URL = "https://api.github.com"
+const GITHUB_URL = "api.github.com"
 
 func main() {
 	err := godotenv.Load()
@@ -25,8 +25,16 @@ func main() {
 	// Get list of public repositories...
 	// Fetch commits from each repository...
 	// Save all the information to database...
-	const reposEndpoint = path.Join(GITHUB_URL, fmt.Sprintf("users/%s", USERNAME))
+	var reposEndpoint = path.Join(GITHUB_URL, fmt.Sprintf("users/%s", USERNAME))
 
-	request, err := http.NewRequest("GET", fmt.Sprintf("%s?per_page=100&type=owner", reposEndpoint))
-	request.Header.Add("Bearer", "")
+	client := &http.Client{}
+	request, err := http.NewRequest("GET", fmt.Sprintf("https://%s?per_page=100&type=owner", reposEndpoint), nil)
+	request.Header.Add("Bearer", token)
+
+	response, err := client.Do(request)
+	if err != nil {
+		log.Fatal(err)
+	} else {
+		fmt.Println(response)
+	}
 }

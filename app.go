@@ -23,14 +23,15 @@ type RepositoryData struct {
 	FullName string
 }
 
-type CommitData struct {
-	Hash string
-	Date time.Time
-}
-
 type DayCount struct {
 	CommitCount uint64
 	Day         time.Time
+}
+
+type CommitData struct {
+	Hash string
+	Date time.Time
+	Repo string
 }
 
 func main() {
@@ -41,16 +42,20 @@ func main() {
 	}
 
 	token := os.Getenv("GITHUB_API_TOKEN")
-	commits, err := getAllCommits(token)
+	_, err = getAllCommits(token)
 
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	fmt.Println(commits)
+	// getDayCounts(commits)
+	// fmt.Println(dayCounts)
 }
 
-func getDayCounts() ([]DayCount, error) {
+func getDayCounts(commitTimes []CommitData) ([]DayCount, error) {
+	for _, commitTime := range commitTimes {
+		fmt.Println(commitTime)
+	}
 	return nil, nil
 }
 
@@ -62,23 +67,30 @@ func getAllCommits(token string) ([]CommitData, error) {
 	}
 
 	var commits []CommitData
+	var commitPtr *[]CommitData = &commits
 	var mtx sync.Mutex
 	var wg sync.WaitGroup
 
-	wg.Add(len(repos))
-
+	i := 0
 	for _, repo := range repos {
-		func() {
-			defer wg.Done()
-			repoCommits, err := getCommitsFromRepo(repo.FullName, token)
+		wg.Add(1)
+		go func(id int) {
+			var repoCommits []CommitData
+			repoCommits, err = getCommitsFromRepo(repo.FullName, token)
+
 			if err != nil {
 				log.Fatal(err)
 			}
 
+			fmt.Printf("current = %d, upcoming = %d\n", len(*commitPtr), len(repoCommits))
 			mtx.Lock()
-			commits = append(commits, repoCommits...)
+			*commitPtr = append(*commitPtr, repoCommits...)
 			mtx.Unlock()
-		}()
+
+			wg.Done()
+			fmt.Printf("Finished %d/%d\n", id, len(repos))
+		}(i)
+		i += 1
 	}
 
 	wg.Wait()
@@ -98,6 +110,7 @@ func getRepos(token string) ([]RepositoryData, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	request.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
 	request.Header.Add("Accept", "application/vnd.github+json")
 	request.Header.Add("X-GitHub-Api-Version", "2022-11-28")
@@ -115,9 +128,11 @@ func getRepos(token string) ([]RepositoryData, error) {
 			return nil, err
 		}
 
-		var repositoryData []RepositoryData
+		var repositoryData = make([]RepositoryData, len(repositories))
 
-		for _, repository := range repositories {
+		for i := 0; i < len(repositories); i++ {
+			repository := repositories[i]
+
 			id, _ := repository.(map[string]interface{})["id"].(uint64)
 			name, _ := repository.(map[string]interface{})["name"].(string)
 			fullName, _ := repository.(map[string]interface{})["full_name"].(string)
@@ -127,7 +142,7 @@ func getRepos(token string) ([]RepositoryData, error) {
 				FullName: fullName,
 			}
 
-			repositoryData = append(repositoryData, repo)
+			repositoryData[i] = repo
 		}
 
 		return repositoryData, nil
@@ -140,10 +155,11 @@ func getRepos(token string) ([]RepositoryData, error) {
 // Example: johnmatthiggins/git-commit-scraper
 func getCommitsFromRepo(fullName string, token string) ([]CommitData, error) {
 	dayDuration, _ := time.ParseDuration("24h")
-	var endpoint string = fmt.Sprintf("https://%s", path.Join(GITHUB_URL, "repos", fullName, "commits"))
+	var endpoint = fmt.Sprintf("https://%s", path.Join(GITHUB_URL, "repos", fullName, "commits"))
 	var fiftyTwoWeeksAgo = time.Now().Add(-dayDuration * 52 * 7)
 	var startISOTime = fiftyTwoWeeksAgo.Format(time.RFC3339)
-	var url = fmt.Sprintf("%s?committer=johnmatthiggins&since=%s", endpoint, startISOTime)
+
+	var url = fmt.Sprintf("%s?committer=johnmatthiggins&per_page=100&since=%s", endpoint, startISOTime)
 
 	client := &http.Client{}
 	request, err := http.NewRequest("GET", url, nil)
@@ -156,9 +172,13 @@ func getCommitsFromRepo(fullName string, token string) ([]CommitData, error) {
 	request.Header.Add("X-GitHub-Api-Version", "2022-11-28")
 
 	response, err := client.Do(request)
+
 	if err != nil {
 		return nil, err
+	} else if response.StatusCode != 200 {
+		log.Fatalf("\"GET\" Request to %s failed...", url)
 	}
+
 	var commits []interface{}
 	bytes, err := io.ReadAll(response.Body)
 
@@ -170,13 +190,23 @@ func getCommitsFromRepo(fullName string, token string) ([]CommitData, error) {
 		return nil, err
 	}
 
-	var commitData []CommitData
+	commitData, err := parseCommitData(commits, fullName)
+	if err != nil {
+		return nil, err
+	}
 
+	return commitData, nil
+}
+
+func parseCommitData(commits []interface{}, repoName string) ([]CommitData, error) {
+	var commitData = make([]CommitData, len(commits))
+
+	var i = 0
 	for _, commit := range commits {
-		// commit -> author -> date
 		hash, _ := commit.(map[string]interface{})["sha"].(string)
 
-		// getting commit time
+		// getting commit date
+		// commit -> author -> date
 		innerCommit, _ := commit.(map[string]interface{})["commit"]
 		commitAuthor, _ := innerCommit.(map[string]interface{})["author"]
 		commitTimeStr, _ := commitAuthor.(map[string]interface{})["date"].(string)
@@ -189,9 +219,12 @@ func getCommitsFromRepo(fullName string, token string) ([]CommitData, error) {
 		newCommitData := CommitData{
 			Hash: hash,
 			Date: commitTime,
+			Repo: repoName,
 		}
 
-		commitData = append(commitData, newCommitData)
+		commitData[i] = newCommitData
+
+		i += 1
 	}
 
 	return commitData, nil

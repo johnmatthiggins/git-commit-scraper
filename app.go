@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -48,21 +49,95 @@ type DatabaseConfig struct {
 func main() {
 	err := godotenv.Load()
 
+	port := os.Getenv("PORT")
+	token := os.Getenv("GITHUB_API_TOKEN")
+	host := os.Getenv("HOST")
+
+	if port == "" {
+		port = "8090"
+	}
+	if token == "" {
+		log.Fatal("GITHUB_API_TOKEN was not specified...")
+	}
+	if host == "" {
+		host = "127.0.0.1"
+	}
+
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	token := os.Getenv("GITHUB_API_TOKEN")
+	addr := fmt.Sprintf("%s:%s", host, port)
+
+	http.HandleFunc("/sync/", func(w http.ResponseWriter, _ *http.Request) {
+		err := syncCommits(token)
+
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, fmt.Sprintf("%s\n", err))
+		} else {
+			w.WriteHeader(http.StatusOK)
+			io.WriteString(w, "Success")
+		}
+	})
+
+	http.HandleFunc("/daycounts/", func(w http.ResponseWriter, _ *http.Request) {
+		err := syncCommits(token)
+
+		if err != nil {
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, fmt.Sprintf("%s\n", err))
+		} else {
+			w.WriteHeader(http.StatusOK)
+			io.WriteString(w, "Success")
+		}
+	})
+
+	fmt.Printf("Running server at %s\n", addr)
+	err = http.ListenAndServe(addr, nil)
+
+	if errors.Is(err, http.ErrServerClosed) {
+		fmt.Printf("Server closed\n")
+	} else if err != nil {
+		fmt.Printf("Error starting server: %s\n", err)
+		os.Exit(1)
+	}
+}
+
+type DayCount struct {
+	date        string
+	commitCount int
+}
+
+func getDayCounts(since time.Time) ([]DayCount, error) {
+	query := `
+SELECT date, COUNT(*) as commitCount FROM commits
+WHERE "date"::date > $1
+GROUP BY "date"::date;
+`
+
+	sinceDate := since.Format(time.DateOnly)
+	db, err := sqlx.Connect("postgres", parseDatabaseConfig().toString())
+
+	if err != nil {
+		return err
+	}
+
+	// query data using query from above
+
+	return nil, nil
+}
+
+func syncCommits(token string) error {
 	commits, err := getAllCommits(token)
 
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	err = writeToDatabase(commits)
-	if err != nil {
-		log.Fatal(err)
-	}
+
+	return err
 }
 
 func parseDatabaseConfig() *DatabaseConfig {
@@ -94,7 +169,7 @@ func writeToDatabase(commits []CommitData) error {
 	transaction := db.MustBegin()
 
 	for _, commit := range commits {
-		_, err := transaction.NamedExec("INSERT INTO commit (hash, date, repo_name) VALUES (:hash, :date, :repo_name);", &commit)
+		_, err := transaction.NamedExec("INSERT INTO commit (hash, date, repo_name) VALUES (:hash, :date, :repo_name) ON CONFLICT DO NOTHING;", &commit)
 		if err != nil {
 			return err
 		}
@@ -105,13 +180,6 @@ func writeToDatabase(commits []CommitData) error {
 
 	return nil
 }
-
-// func getDayCounts(commitTimes []CommitData) ([]DayCount, error) {
-// 	for _, commitTime := range commitTimes {
-// 		fmt.Println(commitTime)
-// 	}
-// 	return nil, nil
-// }
 
 func getAllCommits(token string) ([]CommitData, error) {
 	repos, err := getRepos(token)

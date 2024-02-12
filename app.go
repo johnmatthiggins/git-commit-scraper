@@ -11,11 +11,21 @@ import (
 	"sync"
 	"time"
 
+	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 const USERNAME = "johnmatthiggins"
 const GITHUB_URL = "api.github.com"
+
+const CREATE_SCHEMA_SQL = `
+    CREATE TABLE IF NOT EXISTS commit (
+	hash      varchar(255) PRIMARY KEY,
+	date      timestamp,
+	repo_name varchar(255)
+    );
+`
 
 type RepositoryData struct {
 	Id       uint64
@@ -23,15 +33,10 @@ type RepositoryData struct {
 	FullName string
 }
 
-type DayCount struct {
-	CommitCount uint64
-	Day         time.Time
-}
-
 type CommitData struct {
-	Hash string
-	Date time.Time
-	Repo string
+	Hash string    `db:"hash"`
+	Date time.Time `db:"date"`
+	Repo string    `db:"repo_name"`
 }
 
 func main() {
@@ -42,19 +47,48 @@ func main() {
 	}
 
 	token := os.Getenv("GITHUB_API_TOKEN")
-	_, err = getAllCommits(token)
+	commits, err := getAllCommits(token)
 
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = writeToDatabase(commits)
 	if err != nil {
 		log.Fatal(err)
 	}
 }
 
-func getDayCounts(commitTimes []CommitData) ([]DayCount, error) {
-	for _, commitTime := range commitTimes {
-		fmt.Println(commitTime)
+func writeToDatabase(commits []CommitData) error {
+	db, err := sqlx.Connect("postgres", "user=jhiggins sslmode=disable host=localhost")
+
+	if err != nil {
+		return err
 	}
-	return nil, nil
+
+	db.MustExec(CREATE_SCHEMA_SQL)
+
+	transaction := db.MustBegin()
+
+	for _, commit := range commits {
+		_, err := transaction.NamedExec("INSERT INTO commit (hash, date, repo_name) VALUES (:hash, :date, :repo_name);", &commit)
+		if err != nil {
+			return err
+		}
+	}
+	transaction.Commit()
+
+	db.Close()
+
+	return nil
 }
+
+// func getDayCounts(commitTimes []CommitData) ([]DayCount, error) {
+// 	for _, commitTime := range commitTimes {
+// 		fmt.Println(commitTime)
+// 	}
+// 	return nil, nil
+// }
 
 func getAllCommits(token string) ([]CommitData, error) {
 	repos, err := getRepos(token)
@@ -158,9 +192,10 @@ func getRepos(token string) ([]RepositoryData, error) {
 // Example: johnmatthiggins/git-commit-scraper
 func getCommitsFromRepo(fullName string, token string) ([]CommitData, error) {
 	dayDuration, _ := time.ParseDuration("24h")
-	var endpoint = fmt.Sprintf("https://%s", path.Join(GITHUB_URL, "repos", fullName, "commits"))
-	var fiftyTwoWeeksAgo = time.Now().Add(-dayDuration * 52 * 7)
-	var startISOTime = fiftyTwoWeeksAgo.Format(time.RFC3339)
+	endpoint := fmt.Sprintf("https://%s", path.Join(GITHUB_URL, "repos", fullName, "commits"))
+	fiftyTwoWeeksAgo := time.Now().Add(-dayDuration * 52 * 7)
+
+	startISOTime := fiftyTwoWeeksAgo.Format(time.RFC3339)
 
 	url := fmt.Sprintf("%s?committer=johnmatthiggins&per_page=100&since=%s", endpoint, startISOTime)
 
@@ -196,6 +231,7 @@ func getCommitsFromRepo(fullName string, token string) ([]CommitData, error) {
 }
 
 func parseCommitData(commits []interface{}, repoName string) ([]CommitData, error) {
+	day, _ := time.ParseDuration("24h")
 	var commitData = make([]CommitData, len(commits))
 
 	var i = 0
@@ -208,6 +244,7 @@ func parseCommitData(commits []interface{}, repoName string) ([]CommitData, erro
 		commitAuthor, _ := innerCommit.(map[string]interface{})["author"]
 		commitTimeStr, _ := commitAuthor.(map[string]interface{})["date"].(string)
 		commitTime, err := time.Parse(time.RFC3339, commitTimeStr)
+		truncatedCommitTime := commitTime.Truncate(day)
 
 		if err != nil {
 			return nil, err
@@ -215,7 +252,7 @@ func parseCommitData(commits []interface{}, repoName string) ([]CommitData, erro
 
 		newCommitData := CommitData{
 			Hash: hash,
-			Date: commitTime,
+			Date: truncatedCommitTime,
 			Repo: repoName,
 		}
 

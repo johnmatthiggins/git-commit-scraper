@@ -47,9 +47,6 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	// getDayCounts(commits)
-	// fmt.Println(dayCounts)
 }
 
 func getDayCounts(commitTimes []CommitData) ([]DayCount, error) {
@@ -67,30 +64,26 @@ func getAllCommits(token string) ([]CommitData, error) {
 	}
 
 	var commits []CommitData
-	var commitPtr *[]CommitData = &commits
 	var mtx sync.Mutex
 	var wg sync.WaitGroup
 
-	i := 0
+	wg.Add(len(repos))
+
 	for _, repo := range repos {
-		wg.Add(1)
-		go func(id int) {
-			var repoCommits []CommitData
-			repoCommits, err = getCommitsFromRepo(repo.FullName, token)
+		var specificRepo = repo
+		go func() {
+			defer wg.Done()
+
+			repoCommits, err := getCommitsFromRepo(specificRepo.FullName, token)
 
 			if err != nil {
 				log.Fatal(err)
 			}
 
-			fmt.Printf("current = %d, upcoming = %d\n", len(*commitPtr), len(repoCommits))
 			mtx.Lock()
-			*commitPtr = append(*commitPtr, repoCommits...)
+			commits = append(commits, repoCommits...)
 			mtx.Unlock()
-
-			wg.Done()
-			fmt.Printf("Finished %d/%d\n", id, len(repos))
-		}(i)
-		i += 1
+		}()
 	}
 
 	wg.Wait()
@@ -98,14 +91,8 @@ func getAllCommits(token string) ([]CommitData, error) {
 	return commits, nil
 }
 
-func getRepos(token string) ([]RepositoryData, error) {
-	// Get list of public repositories...
-	// Fetch commits from each repository...
-	// Save all the information to database...
-	var reposEndpoint = path.Join(GITHUB_URL, "user/repos")
-
-	client := &http.Client{}
-	request, err := http.NewRequest("GET", fmt.Sprintf("https://%s?per_page=100&type=public", reposEndpoint), nil)
+func createGithubApiRequest(url string, token string) (*http.Request, error) {
+	request, err := http.NewRequest("GET", url, nil)
 
 	if err != nil {
 		return nil, err
@@ -115,40 +102,56 @@ func getRepos(token string) ([]RepositoryData, error) {
 	request.Header.Add("Accept", "application/vnd.github+json")
 	request.Header.Add("X-GitHub-Api-Version", "2022-11-28")
 
-	response, err := client.Do(request)
-	if err == nil {
-		var repositories []interface{}
-		bytes, err := io.ReadAll(response.Body)
+	return request, nil
+}
 
-		if err != nil {
-			return nil, err
-		}
-		err = json.Unmarshal([]byte(bytes), &repositories)
-		if err != nil {
-			return nil, err
-		}
+func getRepos(token string) ([]RepositoryData, error) {
+	// Get list of public repositories...
+	// Fetch commits from each repository...
+	// Save all the information to database...
+	var reposEndpoint = path.Join(GITHUB_URL, "user/repos")
 
-		var repositoryData = make([]RepositoryData, len(repositories))
+	client := &http.Client{}
+	url := fmt.Sprintf("https://%s?per_page=100&type=public", reposEndpoint)
 
-		for i := 0; i < len(repositories); i++ {
-			repository := repositories[i]
-
-			id, _ := repository.(map[string]interface{})["id"].(uint64)
-			name, _ := repository.(map[string]interface{})["name"].(string)
-			fullName, _ := repository.(map[string]interface{})["full_name"].(string)
-			repo := RepositoryData{
-				Id:       id,
-				Name:     name,
-				FullName: fullName,
-			}
-
-			repositoryData[i] = repo
-		}
-
-		return repositoryData, nil
+	request, err := createGithubApiRequest(url, token)
+	if err != nil {
+		return nil, err
 	}
 
-	return nil, err
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	var repositories []interface{}
+	bytes, err := io.ReadAll(response.Body)
+
+	if err != nil {
+		return nil, err
+	}
+	err = json.Unmarshal([]byte(bytes), &repositories)
+	if err != nil {
+		return nil, err
+	}
+
+	var repositoryData = make([]RepositoryData, len(repositories))
+
+	for i := 0; i < len(repositories); i++ {
+		repository := repositories[i]
+
+		id, _ := repository.(map[string]interface{})["id"].(uint64)
+		name, _ := repository.(map[string]interface{})["name"].(string)
+		fullName, _ := repository.(map[string]interface{})["full_name"].(string)
+		repo := RepositoryData{
+			Id:       id,
+			Name:     name,
+			FullName: fullName,
+		}
+
+		repositoryData[i] = repo
+	}
+
+	return repositoryData, nil
 }
 
 // Full name is {owner}/{slug}
@@ -159,17 +162,10 @@ func getCommitsFromRepo(fullName string, token string) ([]CommitData, error) {
 	var fiftyTwoWeeksAgo = time.Now().Add(-dayDuration * 52 * 7)
 	var startISOTime = fiftyTwoWeeksAgo.Format(time.RFC3339)
 
-	var url = fmt.Sprintf("%s?committer=johnmatthiggins&per_page=100&since=%s", endpoint, startISOTime)
+	url := fmt.Sprintf("%s?committer=johnmatthiggins&per_page=100&since=%s", endpoint, startISOTime)
 
 	client := &http.Client{}
-	request, err := http.NewRequest("GET", url, nil)
-
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Add("Authorization", fmt.Sprintf("Bearer %s", token))
-	request.Header.Add("Accept", "application/vnd.github+json")
-	request.Header.Add("X-GitHub-Api-Version", "2022-11-28")
+	request, err := createGithubApiRequest(url, token)
 
 	response, err := client.Do(request)
 
@@ -185,6 +181,7 @@ func getCommitsFromRepo(fullName string, token string) ([]CommitData, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	err = json.Unmarshal([]byte(bytes), &commits)
 	if err != nil {
 		return nil, err
@@ -223,7 +220,6 @@ func parseCommitData(commits []interface{}, repoName string) ([]CommitData, erro
 		}
 
 		commitData[i] = newCommitData
-
 		i += 1
 	}
 

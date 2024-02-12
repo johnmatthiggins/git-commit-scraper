@@ -39,6 +39,12 @@ type CommitData struct {
 	Repo string    `db:"repo_name"`
 }
 
+type DatabaseConfig struct {
+	user     string
+	database string
+	host     string
+}
+
 func main() {
 	err := godotenv.Load()
 
@@ -59,8 +65,25 @@ func main() {
 	}
 }
 
+func parseDatabaseConfig() *DatabaseConfig {
+	host := os.Getenv("DB_HOST")
+	database := os.Getenv("DB_NAME")
+	user := os.Getenv("DB_USER")
+
+	config := DatabaseConfig{
+		user:     user,
+		database: database,
+		host:     host,
+	}
+	return &config
+}
+
+func (config *DatabaseConfig) toString() string {
+	return fmt.Sprintf("database=%s user=%s sslmode=disable host=%s", config.database, config.user, config.host)
+}
+
 func writeToDatabase(commits []CommitData) error {
-	db, err := sqlx.Connect("postgres", "user=jhiggins sslmode=disable host=localhost")
+	db, err := sqlx.Connect("postgres", parseDatabaseConfig().toString())
 
 	if err != nil {
 		return err

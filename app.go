@@ -21,10 +21,10 @@ const USERNAME = "johnmatthiggins"
 const GITHUB_URL = "api.github.com"
 
 const CREATE_SCHEMA_SQL = `
-    CREATE TABLE IF NOT EXISTS commit (
-	hash      varchar(255) PRIMARY KEY,
-	date      varchar(255),
-	repo_name varchar(255)
+    CREATE TABLE IF NOT EXISTS commitData (
+	hash      text PRIMARY KEY,
+	date      text,
+	repo_name text
     );
 `
 
@@ -38,12 +38,6 @@ type CommitData struct {
 	Hash string    `db:"hash"`
 	Date time.Time `db:"date"`
 	Repo string    `db:"repo_name"`
-}
-
-type DatabaseConfig struct {
-	user     string
-	database string
-	host     string
 }
 
 func main() {
@@ -113,15 +107,15 @@ func main() {
 }
 
 type DayCount struct {
-	date        time.Time
-	commitCount int
+	Date        string `db:"date"`
+	CommitCount int    `db:"commitCount"`
 }
 
 func getDayCounts(since time.Time) ([]DayCount, error) {
 	query := `
-SELECT date, COUNT(*) as "commitCount" FROM commits
-WHERE "date"::date > :since
-GROUP BY "date";
+SELECT date, COUNT(hash) as commitCount FROM commitData
+WHERE date > ?
+GROUP BY date;
 `
 
 	sinceDate := since.Format(time.DateOnly)
@@ -131,18 +125,10 @@ GROUP BY "date";
 		return nil, err
 	}
 
-	rows, err := db.NamedQuery(query, map[string]interface{}{"since": sinceDate})
-
-	dayCount := DayCount{}
-	var commitCounts []DayCount
-
-	for rows.Next() {
-		err := rows.StructScan(&dayCount)
-		if err != nil {
-			return nil, err
-		}
-
-		commitCounts = append(commitCounts, dayCount)
+	commitCounts := []DayCount{}
+	err = db.Select(&commitCounts, query, sinceDate)
+	if err != nil {
+		return nil, err
 	}
 
 	return commitCounts, nil
@@ -160,23 +146,6 @@ func syncCommits(token string) error {
 	return err
 }
 
-func parseDatabaseConfig() *DatabaseConfig {
-	host := os.Getenv("DB_HOST")
-	database := os.Getenv("DB_NAME")
-	user := os.Getenv("DB_USER")
-
-	config := DatabaseConfig{
-		user:     user,
-		database: database,
-		host:     host,
-	}
-	return &config
-}
-
-func (config *DatabaseConfig) toString() string {
-	return fmt.Sprintf("database=%s user=%s sslmode=disable host=%s", config.database, config.user, config.host)
-}
-
 func writeToDatabase(commits []CommitData) error {
 	db, err := sqlx.Connect("sqlite3", "__sqlite.db")
 
@@ -189,7 +158,7 @@ func writeToDatabase(commits []CommitData) error {
 	transaction := db.MustBegin()
 
 	for _, commit := range commits {
-		_, err := transaction.NamedExec("INSERT INTO commit VALUES (:hash, :date, :repo_name);", &commit)
+		_, err := transaction.NamedExec("INSERT INTO commitData (hash, date, repo_name) VALUES (:hash, :date, :repo_name) ON CONFLICT DO NOTHING;", &commit)
 		if err != nil {
 			return err
 		}

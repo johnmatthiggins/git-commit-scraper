@@ -14,7 +14,7 @@ import (
 
 	"github.com/jmoiron/sqlx"
 	"github.com/joho/godotenv"
-	_ "github.com/lib/pq"
+	_ "github.com/mattn/go-sqlite3"
 )
 
 const USERNAME = "johnmatthiggins"
@@ -23,7 +23,7 @@ const GITHUB_URL = "api.github.com"
 const CREATE_SCHEMA_SQL = `
     CREATE TABLE IF NOT EXISTS commit (
 	hash      varchar(255) PRIMARY KEY,
-	date      timestamp,
+	date      varchar(255),
 	repo_name varchar(255)
     );
 `
@@ -81,15 +81,23 @@ func main() {
 		}
 	})
 
-	http.HandleFunc("/daycounts/", func(w http.ResponseWriter, _ *http.Request) {
-		err := syncCommits(token)
+	http.HandleFunc("/counts/", func(w http.ResponseWriter, _ *http.Request) {
+		dayDuration, _ := time.ParseDuration("24h")
+		fiftyTwoWeeksAgo := time.Now().Add(-dayDuration * 52 * 7)
+		commits, err := getDayCounts(fiftyTwoWeeksAgo)
 
 		if err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
 			io.WriteString(w, fmt.Sprintf("%s\n", err))
 		} else {
-			w.WriteHeader(http.StatusOK)
-			io.WriteString(w, "Success")
+			bytes, err := json.Marshal(commits)
+			if err != nil {
+				w.WriteHeader(http.StatusInternalServerError)
+			} else {
+				w.WriteHeader(http.StatusOK)
+				w.Header().Set("Content-Type", "application/json")
+				w.Write(bytes)
+			}
 		}
 	})
 
@@ -105,27 +113,39 @@ func main() {
 }
 
 type DayCount struct {
-	date        string
+	date        time.Time
 	commitCount int
 }
 
 func getDayCounts(since time.Time) ([]DayCount, error) {
 	query := `
-SELECT date, COUNT(*) as commitCount FROM commits
-WHERE "date"::date > $1
-GROUP BY "date"::date;
+SELECT date, COUNT(*) as "commitCount" FROM commits
+WHERE "date"::date > :since
+GROUP BY "date";
 `
 
 	sinceDate := since.Format(time.DateOnly)
-	db, err := sqlx.Connect("postgres", parseDatabaseConfig().toString())
+	db, err := sqlx.Connect("sqlite3", "__sqlite.db")
 
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// query data using query from above
+	rows, err := db.NamedQuery(query, map[string]interface{}{"since": sinceDate})
 
-	return nil, nil
+	dayCount := DayCount{}
+	var commitCounts []DayCount
+
+	for rows.Next() {
+		err := rows.StructScan(&dayCount)
+		if err != nil {
+			return nil, err
+		}
+
+		commitCounts = append(commitCounts, dayCount)
+	}
+
+	return commitCounts, nil
 }
 
 func syncCommits(token string) error {
@@ -158,7 +178,7 @@ func (config *DatabaseConfig) toString() string {
 }
 
 func writeToDatabase(commits []CommitData) error {
-	db, err := sqlx.Connect("postgres", parseDatabaseConfig().toString())
+	db, err := sqlx.Connect("sqlite3", "__sqlite.db")
 
 	if err != nil {
 		return err
@@ -169,7 +189,7 @@ func writeToDatabase(commits []CommitData) error {
 	transaction := db.MustBegin()
 
 	for _, commit := range commits {
-		_, err := transaction.NamedExec("INSERT INTO commit (hash, date, repo_name) VALUES (:hash, :date, :repo_name) ON CONFLICT DO NOTHING;", &commit)
+		_, err := transaction.NamedExec("INSERT INTO commit VALUES (:hash, :date, :repo_name);", &commit)
 		if err != nil {
 			return err
 		}
